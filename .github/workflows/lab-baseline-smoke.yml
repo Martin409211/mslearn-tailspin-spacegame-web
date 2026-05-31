@@ -1,0 +1,92 @@
+name: Azure Test Lab Baseline Smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: azure-test-lab-baseline-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  app-smoke:
+    name: Build And Smoke Test Local App
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build application
+        run: |
+          dotnet --info
+          dotnet restore Tailspin.SpaceGame.Web.sln
+          dotnet build Tailspin.SpaceGame.Web.sln --configuration Release --no-restore
+          dotnet publish Tailspin.SpaceGame.Web/Tailspin.SpaceGame.Web.csproj --configuration Release --no-build --output artifacts/publish
+
+      - name: Run baseline smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p reports
+          started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          app_url="http://127.0.0.1:5080"
+
+          ASPNETCORE_ENVIRONMENT=Development \
+          ASPNETCORE_URLS="${app_url}" \
+          dotnet artifacts/publish/Tailspin.SpaceGame.Web.dll > reports/app.log 2>&1 &
+          app_pid="$!"
+          trap 'kill "${app_pid}" > /dev/null 2>&1 || true' EXIT
+
+          ready="false"
+          for _ in $(seq 1 60); do
+            if curl --location --fail --silent --show-error "${app_url}/" > reports/home.html; then
+              ready="true"
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "${ready}" != "true" ]; then
+            echo "Tailspin baseline app did not become ready in time." >&2
+            exit 1
+          fi
+
+          curl --location --fail --silent --show-error "${app_url}/Home/Privacy" > reports/privacy.html
+
+          finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          cat > reports/lab-baseline-smoke-report.json <<JSON
+          {
+            "scenario": "tailspin-baseline-local-smoke",
+            "startedAt": "${started_at}",
+            "finishedAt": "${finished_at}",
+            "repository": "${GITHUB_REPOSITORY}",
+            "ref": "${GITHUB_REF_NAME}",
+            "sha": "${GITHUB_SHA}",
+            "appBoundTo": "${app_url}",
+            "requests": [
+              "GET /",
+              "GET /Home/Privacy"
+            ],
+            "deployment": "none",
+            "notes": "Local normal-app smoke requests only. No Azure resources or public endpoint are created."
+          }
+          JSON
+
+      - name: Upload baseline smoke report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: azure-test-lab-tailspin-baseline-smoke
+          path: reports/
+          if-no-files-found: error
+          retention-days: 14
