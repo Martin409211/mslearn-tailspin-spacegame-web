@@ -42,9 +42,12 @@ jobs:
           started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           app_url="http://127.0.0.1:5080"
 
-          ASPNETCORE_ENVIRONMENT=Development \
-          ASPNETCORE_URLS="${app_url}" \
-          dotnet artifacts/publish/Tailspin.SpaceGame.Web.dll > reports/app.log 2>&1 &
+          (
+            cd artifacts/publish
+            ASPNETCORE_ENVIRONMENT=Development \
+            ASPNETCORE_URLS="${app_url}" \
+            dotnet Tailspin.SpaceGame.Web.dll
+          ) > "${GITHUB_WORKSPACE}/reports/app.log" 2>&1 &
           app_pid="$!"
           trap 'kill "${app_pid}" > /dev/null 2>&1 || true' EXIT
 
@@ -53,6 +56,11 @@ jobs:
             if curl --location --fail --silent --show-error "${app_url}/" > reports/home.html; then
               ready="true"
               break
+            fi
+            if ! kill -0 "${app_pid}" > /dev/null 2>&1; then
+              echo "Tailspin baseline app exited before becoming ready." >&2
+              cat reports/app.log >&2 || true
+              exit 1
             fi
             sleep 2
           done
@@ -84,6 +92,7 @@ jobs:
           JSON
 
       - name: Upload baseline smoke report
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: azure-test-lab-tailspin-baseline-smoke
